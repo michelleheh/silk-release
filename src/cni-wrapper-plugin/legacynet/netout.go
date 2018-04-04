@@ -6,7 +6,7 @@ import (
 	"lib/rules"
 	"net"
 
-	multierror "github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/go-multierror"
 
 	"code.cloudfoundry.org/garden"
 )
@@ -30,7 +30,7 @@ type NetOut struct {
 	C2CLogging            bool
 	IngressTag            string
 	VTEPName              string
-	HostInterfaceName     string
+	HostInterfaceNames    []string
 	DeniedLogsPerSec      int
 	AcceptedUDPLogsPerSec int
 }
@@ -39,7 +39,7 @@ type fullRule struct {
 	Table          string
 	ParentChain    string
 	Chain          string
-	JumpConditions rules.IPTablesRule
+	JumpConditions []rules.IPTablesRule
 	Rules          []rules.IPTablesRule
 }
 
@@ -56,53 +56,61 @@ func (m *NetOut) Initialize(containerHandle string, containerIP net.IP, dnsServe
 		return fmt.Errorf("getting chain name: %s", err)
 	}
 
-	args := []fullRule{
-		{
-			Table:       "filter",
-			ParentChain: "INPUT",
-			Chain:       inputChain,
-			JumpConditions: rules.IPTablesRule{
-				"-s", containerIP.String(),
-			},
-			Rules: []rules.IPTablesRule{
-				rules.NewInputRelatedEstablishedRule(),
-				rules.NewInputDefaultRejectRule(),
-			},
+	args := make([]fullRule, 3+len(m.HostInterfaceNames))
+
+	args = append(args, fullRule{
+		Table:       "filter",
+		ParentChain: "INPUT",
+		Chain:       inputChain,
+		JumpConditions: []rules.IPTablesRule{
+			{"-s", containerIP.String()},
 		},
-		{
-			Table:       "filter",
-			ParentChain: "FORWARD",
-			Chain:       forwardChain,
-			JumpConditions: rules.IPTablesRule{
-				"-s", containerIP.String(),
-				"-o", m.HostInterfaceName,
-			},
-			Rules: []rules.IPTablesRule{
-				rules.NewNetOutRelatedEstablishedRule(),
-				rules.NewNetOutDefaultRejectRule(),
-			},
+		Rules: []rules.IPTablesRule{
+			rules.NewInputRelatedEstablishedRule(),
+			rules.NewInputDefaultRejectRule(),
 		},
-		{
-			Table:       "filter",
-			ParentChain: "FORWARD",
-			Chain:       overlayChain,
-			Rules: []rules.IPTablesRule{
-				rules.NewOverlayAllowEgress(m.VTEPName, containerIP.String()),
-				rules.NewOverlayRelatedEstablishedRule(containerIP.String()),
-				rules.NewOverlayTagAcceptRule(containerIP.String(), m.IngressTag),
-				rules.NewOverlayDefaultRejectRule(containerIP.String()),
-			},
-		},
-		{
-			Table: "filter",
-			Chain: logChain,
-			Rules: []rules.IPTablesRule{
-				rules.NewNetOutDefaultNonUDPLogRule(containerHandle),
-				rules.NewNetOutDefaultUDPLogRule(containerHandle, m.AcceptedUDPLogsPerSec),
-				rules.NewAcceptRule(),
-			},
+	})
+
+	rule := fullRule{
+		Table:       "filter",
+		ParentChain: "FORWARD",
+		Chain:       forwardChain,
+		Rules: []rules.IPTablesRule{
+			rules.NewNetOutRelatedEstablishedRule(),
+			rules.NewNetOutDefaultRejectRule(),
 		},
 	}
+
+	var jumpConditions []rules.IPTablesRule
+	for _, hostIfaceName := range m.HostInterfaceNames {
+		jumpConditions = append(jumpConditions, rules.IPTablesRule{"-s", containerIP.String(), "-o", hostIfaceName})
+	}
+	rule.JumpConditions = jumpConditions
+
+	args = append(args, rule)
+
+
+	args = append(args, fullRule{
+		Table:       "filter",
+		ParentChain: "FORWARD",
+		Chain:       overlayChain,
+		Rules: []rules.IPTablesRule{
+			rules.NewOverlayAllowEgress(m.VTEPName, containerIP.String()),
+			rules.NewOverlayRelatedEstablishedRule(containerIP.String()),
+			rules.NewOverlayTagAcceptRule(containerIP.String(), m.IngressTag),
+			rules.NewOverlayDefaultRejectRule(containerIP.String()),
+		},
+	})
+
+	args = append(args, fullRule{
+		Table: "filter",
+		Chain: logChain,
+		Rules: []rules.IPTablesRule{
+			rules.NewNetOutDefaultNonUDPLogRule(containerHandle),
+			rules.NewNetOutDefaultUDPLogRule(containerHandle, m.AcceptedUDPLogsPerSec),
+			rules.NewAcceptRule(),
+		},
+	})
 
 	if m.ASGLogging {
 		args[1].Rules = []rules.IPTablesRule{
@@ -160,17 +168,16 @@ func (m *NetOut) Cleanup(containerHandle, containerIP string) error {
 			Table:       "filter",
 			ParentChain: "FORWARD",
 			Chain:       forwardChain,
-			JumpConditions: rules.IPTablesRule{
-				"-s", containerIP,
-				"-o", m.HostInterfaceName,
+			JumpConditions: []rules.IPTablesRule{
+				{"-s", containerIP, "-o", m.HostInterfaceNames[0]},
 			},
 		},
 		{
 			Table:       "filter",
 			ParentChain: "INPUT",
 			Chain:       inputChain,
-			JumpConditions: rules.IPTablesRule{
-				"-s", containerIP,
+			JumpConditions: []rules.IPTablesRule{
+				{"-s", containerIP},
 			},
 		},
 		{
@@ -186,8 +193,10 @@ func (m *NetOut) Cleanup(containerHandle, containerIP string) error {
 func cleanupChains(args []fullRule, iptables rules.IPTablesAdapter) error {
 	var result error
 	for _, arg := range args {
-		if err := cleanupChain(arg.Table, arg.ParentChain, arg.Chain, arg.JumpConditions, iptables); err != nil {
-			result = multierror.Append(result, err)
+		for _, jumpCondition := range arg.JumpConditions {
+			if err := cleanupChain(arg.Table, arg.ParentChain, arg.Chain, jumpCondition, iptables); err != nil {
+				result = multierror.Append(result, err)
+			}
 		}
 	}
 	return result

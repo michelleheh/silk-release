@@ -2,7 +2,6 @@ package main
 
 import (
 	"cni-wrapper-plugin/adapter"
-	"cni-wrapper-plugin/discover"
 	"cni-wrapper-plugin/legacynet"
 	"cni-wrapper-plugin/lib"
 	"encoding/json"
@@ -19,6 +18,7 @@ import (
 	"github.com/containernetworking/cni/pkg/types/current"
 	"github.com/containernetworking/cni/pkg/version"
 	"github.com/coreos/go-iptables/iptables"
+	"github.com/vishvananda/netlink"
 )
 
 func cmdAdd(args *skel.CmdArgs) error {
@@ -86,14 +86,24 @@ func cmdAdd(args *skel.CmdArgs) error {
 		}
 	}
 
-	defaultInterface := discover.DefaultInterface{
-		NetlinkAdapter: &adapter.NetlinkAdapter{},
-		NetAdapter:     &adapter.NetAdapter{},
-	}
-	defaultIfaceName, err := defaultInterface.Name()
+	//defaultInterface := discover.DefaultInterface{
+	//	NetlinkAdapter: &adapter.NetlinkAdapter{},
+	//	NetAdapter:     &adapter.NetAdapter{},
+	//}
+	//defaultIfaceName, err := defaultInterface.Name()
+	//if err != nil {
+	//	return fmt.Errorf("discover default interface name: %s", err) // not tested
+	//}
+
+	interfaceNames, err := underlayInterfaceNames(n.UnderlayIPs)
 	if err != nil {
-		return fmt.Errorf("discover default interface name: %s", err) // not tested
+		return fmt.Errorf("it is broken %s", err) // not tested
 	}
+
+	//given ips, find the adapters that have these ips
+	// map the adapters to their names and supply them to
+	// HostInterfaceNames
+	// generate a rule for each name
 
 	// Initialize NetOut
 	netOutProvider := legacynet.NetOut{
@@ -108,7 +118,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 		AcceptedUDPLogsPerSec: n.IPTablesAcceptedUDPLogsPerSec,
 		IngressTag:            n.IngressTag,
 		VTEPName:              n.VTEPName,
-		HostInterfaceName:     defaultIfaceName,
+		HostInterfaceNames:    interfaceNames,
 	}
 	if err := netOutProvider.Initialize(args.ContainerID, containerIP, localDNSServers); err != nil {
 		return fmt.Errorf("initialize net out: %s", err)
@@ -121,7 +131,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 		},
 		IPTables:          pluginController.IPTables,
 		IngressTag:        n.IngressTag,
-		HostInterfaceName: defaultIfaceName,
+		HostInterfaceName: interfaceNames[0], //OMG what about here
 	}
 	err = netinProvider.Initialize(args.ContainerID)
 
@@ -194,22 +204,27 @@ func cmdDel(args *skel.CmdArgs) error {
 		fmt.Fprintf(os.Stderr, "net in cleanup: %s", err)
 	}
 
-	defaultInterface := discover.DefaultInterface{
-		NetlinkAdapter: &adapter.NetlinkAdapter{},
-		NetAdapter:     &adapter.NetAdapter{},
-	}
-	defaultIfaceName, err := defaultInterface.Name()
+	//defaultInterface := discover.DefaultInterface{
+	//	NetlinkAdapter: &adapter.NetlinkAdapter{},
+	//	NetAdapter:     &adapter.NetAdapter{},
+	//}
+	//defaultIfaceName, err := defaultInterface.Name()
+	//if err != nil {
+	//	return fmt.Errorf("discover default interface name: %s", err) // not tested
+	//}
+
+	interfaceNames, err := underlayInterfaceNames(n.UnderlayIPs)
 	if err != nil {
-		return fmt.Errorf("discover default interface name: %s", err) // not tested
+		return fmt.Errorf("it is broken %s", err) // not tested
 	}
 
 	netOutProvider := legacynet.NetOut{
 		ChainNamer: &legacynet.ChainNamer{
 			MaxLength: 28,
 		},
-		IPTables:          pluginController.IPTables,
-		Converter:         &legacynet.NetOutRuleConverter{Logger: os.Stderr},
-		HostInterfaceName: defaultIfaceName,
+		IPTables:           pluginController.IPTables,
+		Converter:          &legacynet.NetOutRuleConverter{Logger: os.Stderr},
+		HostInterfaceNames: interfaceNames,
 	}
 
 	if err = netOutProvider.Cleanup(args.ContainerID, container.IP); err != nil {
@@ -246,6 +261,44 @@ func newPluginController(iptablesLockFile string) (*lib.PluginController, error)
 		IPTables:  lockedIPTables,
 	}
 	return pluginController, nil
+}
+
+func underlayInterfaceNames(underlayIPs []string) ([]string, error) {
+	names := make([]string, len(underlayIPs))
+	for i, underlayIP := range underlayIPs {
+		name, err := underlayInterfaceName(underlayIP)
+		if err != nil {
+			return []string{}, fmt.Errorf("nope nope nope: %s", err) // not tested
+		}
+
+		names[i] = name
+	}
+	return names, nil
+}
+
+func underlayInterfaceName(underlayIPStr string) (string, error) {
+	links, err := netlink.LinkList()
+	if err != nil {
+		return "", fmt.Errorf("discover default interface name: %s", err) // not tested
+	}
+
+	underlayIP := net.ParseIP(underlayIPStr)
+	netlinkAdapter := &adapter.NetlinkAdapter{}
+
+	for _, link := range links {
+		addresses, err := netlinkAdapter.AddrList(link, netlink.FAMILY_V4)
+		if err != nil {
+			return "", fmt.Errorf("nope nope nope: %s", err) // not tested
+		}
+
+		for _, address := range addresses {
+			if underlayIP.Equal(address.IP) {
+				return link.Attrs().Name, nil
+			}
+		}
+
+	}
+	return "", fmt.Errorf("unable to find link with ip addr: %s", underlayIP)
 }
 
 func main() {

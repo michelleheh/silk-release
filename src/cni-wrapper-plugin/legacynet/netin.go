@@ -99,16 +99,20 @@ func initChains(iptables rules.IPTablesAdapter, args []fullRule) error {
 		}
 
 		if arg.ParentChain == "INPUT" {
-			err = iptables.BulkAppend(arg.Table, arg.ParentChain, append(
-				arg.JumpConditions, rules.IPTablesRule{"--jump", arg.Chain}...))
-			if err != nil {
-				return fmt.Errorf("appending rule to INPUT chain: %s", err)
+			for _, jumpCondition := range arg.JumpConditions {
+				err = iptables.BulkAppend(arg.Table, arg.ParentChain, append(
+					jumpCondition, rules.IPTablesRule{"--jump", arg.Chain}...))
+				if err != nil {
+					return fmt.Errorf("appending rule to INPUT chain: %s", err)
+				}
 			}
 		} else if arg.ParentChain != "" {
-			err = iptables.BulkInsert(arg.Table, arg.ParentChain, 1, append(
-				arg.JumpConditions, rules.IPTablesRule{"--jump", arg.Chain}...))
-			if err != nil {
-				return fmt.Errorf("inserting rule: %s", err)
+			for _, jumpCondition := range arg.JumpConditions {
+				err = iptables.BulkInsert(arg.Table, arg.ParentChain, 1, append(
+					jumpCondition, rules.IPTablesRule{"--jump", arg.Chain}...))
+				if err != nil {
+					return fmt.Errorf("inserting rule: %s", err)
+				}
 			}
 		}
 	}
