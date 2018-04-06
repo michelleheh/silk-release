@@ -8,6 +8,10 @@ templates:
 packages:
   - cni
 
+consumes:
+  - name: cf_network
+    type: cf_network
+
 properties:
   mtu:
     description: "Pre-encapsulation MTU for containers.  If set, the network interface inside the container will have an MTU that is 50 bytes less than this value, in order to account for VXLAN encap overhead.  If zero, MTU will be automatically configured to account for the VXLAN encapsulation, but it may not account for additional network encapsulations, e.g. IPSec."
@@ -43,3 +47,7 @@ properties:
 
   temporary.underlay_interface_ips:
     description: "Use with extreme caution. To be used only if there are network interfaces not created by BOSH. Provide IPs for all interfaces. If provided, only interfaces refereced here will be used. Will not use any bosh interface by default."
+
+  proxy_port:
+    description: "Port that Envoy proxy is listening on. Redirect NAT rules will be created to transparently pass packets to the proxy."
+    default: 62001

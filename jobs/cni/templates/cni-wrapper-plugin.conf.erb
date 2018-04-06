@@ -1,12 +1,11 @@
 <%=
   require 'json'
 
-  VXLAN_OVERHEAD = 50
-
   def compute_mtu
     mtu = p('mtu')
     if mtu > 0
-      return mtu - VXLAN_OVERHEAD
+      vxlan_overhead = 50
+      return mtu - vxlan_overhead
     else
       return mtu
     end
@@ -19,6 +18,8 @@
     "datastore" => "/var/vcap/data/container-metadata/store.json",
     "iptables_lock_file" => "/var/vcap/data/garden-cni/iptables.lock",
     "instance_address" => spec.ip,
+    "overlay_network" => link('cf_network').p('network'),
+    "proxy_port" => p("proxy_port"),
     "underlay_ips" => p("temporary.underlay_interface_ips", spec.networks.to_h.values.map(&:ip)),
     "iptables_asg_logging" => p("iptables_logging"),
     "iptables_c2c_logging" => p("iptables_logging"),

@@ -15,8 +15,8 @@ packages:
   - ctl-utils
 
 consumes:
-- name: cf_network
-  type: cf_network
+  - name: cf_network
+    type: cf_network
 
 properties:
   vtep_port:

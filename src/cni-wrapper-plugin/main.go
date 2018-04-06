@@ -126,11 +126,19 @@ func cmdAdd(args *skel.CmdArgs) error {
 		ChainNamer: &legacynet.ChainNamer{
 			MaxLength: 28,
 		},
-		IPTables:          pluginController.IPTables,
-		IngressTag:        n.IngressTag,
+		IPTables:           pluginController.IPTables,
+		IngressTag:         n.IngressTag,
 		HostInterfaceNames: interfaceNames,
 	}
+	//TODO: Where is the error handling?
 	err = netinProvider.Initialize(args.ContainerID)
+
+	//TODO: Do this
+	// containerProxyProvider := proxy.ContainerProxy{}
+	// err = containerProxyProvider.Initialize(n)
+	// if err != nil {
+	// 	panic(err)
+	// }
 
 	// Create port mappings
 	portMappings := n.RuntimeConfig.PortMappings

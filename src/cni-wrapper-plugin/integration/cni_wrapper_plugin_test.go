@@ -46,11 +46,13 @@ var _ = Describe("CniWrapperPlugin", func() {
 		netoutChainName        string
 		inputChainName         string
 		overlayChainName       string
+		envoyChainName         string
 		netoutLoggingChainName string
 		underlayName1          string
 		underlayName2          string
 		underlayIpAddr1        string
 		underlayIpAddr2        string
+		containerNetns         string
 	)
 
 	var cniCommand = func(command, input string) *exec.Cmd {
@@ -58,7 +60,7 @@ var _ = Describe("CniWrapperPlugin", func() {
 		toReturn.Env = []string{
 			"CNI_COMMAND=" + command,
 			"CNI_CONTAINERID=" + containerID,
-			"CNI_NETNS=/some/netns/path",
+			"CNI_NETNS=" + containerNetns,
 			"CNI_IFNAME=some-eth0",
 			"CNI_PATH=" + paths.CNIPath,
 			"CNI_ARGS=DEBUG=" + debugFileName,
@@ -71,6 +73,13 @@ var _ = Describe("CniWrapperPlugin", func() {
 
 	AllIPTablesRules := func(tableName string) []string {
 		iptablesSession, err := gexec.Start(exec.Command("iptables", "-w", "-S", "-t", tableName), GinkgoWriter, GinkgoWriter)
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(iptablesSession).Should(gexec.Exit(0))
+		return strings.Split(string(iptablesSession.Out.Contents()), "\n")
+	}
+
+	ContainerIPTablesRules := func(containerNetns string, tableName string) []string {
+		iptablesSession, err := gexec.Start(exec.Command("ip", "netns", "exec", containerNetns, "iptables", "-w", "-S", "-t", tableName), GinkgoWriter, GinkgoWriter)
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(iptablesSession).Should(gexec.Exit(0))
 		return strings.Split(string(iptablesSession.Out.Contents()), "\n")
@@ -89,8 +98,12 @@ var _ = Describe("CniWrapperPlugin", func() {
 		underlayName2 = "underlay2"
 		underlayIpAddr2 = "169.254.169.254"
 
+		containerNetns = "container-networkns1"
+
 		createDummyInterface(underlayName1, underlayIpAddr1)
 		createDummyInterface(underlayName2, underlayIpAddr2)
+
+		createNetworkNamespace(containerNetns)
 
 		debugFile, err := ioutil.TempFile("", "cni_debug")
 		Expect(err).NotTo(HaveOccurred())
@@ -133,11 +146,12 @@ var _ = Describe("CniWrapperPlugin", func() {
 					"type": "noop",
 					"some": "other data",
 				},
-				InstanceAddress:               "10.244.2.3",
-				IPTablesASGLogging:            false,
-				IngressTag:                    "FFFF0000",
-				VTEPName:                      "some-device",
-				UnderlayIPs:                   []string{underlayIpAddr1, underlayIpAddr2},
+				InstanceAddress:    "10.244.2.3",
+				IPTablesASGLogging: false,
+				IngressTag:         "FFFF0000",
+				VTEPName:           "some-device",
+				UnderlayIPs:        []string{underlayIpAddr1, underlayIpAddr2},
+				// OverlayNetwork:                "10.255.0.0/16",
 				IPTablesDeniedLogsPerSec:      5,
 				IPTablesAcceptedUDPLogsPerSec: 7,
 				RuntimeConfig: lib.RuntimeConfig{
@@ -216,6 +230,7 @@ var _ = Describe("CniWrapperPlugin", func() {
 		netoutChainName = ("netout--" + containerID)[:28]
 		inputChainName = ("input--" + containerID)[:28]
 		overlayChainName = ("overlay--" + containerID)[:28]
+		envoyChainName = ("envoy--" + containerID)[:28]
 		netoutLoggingChainName = fmt.Sprintf("%s--log", netoutChainName[:23])
 
 		cmd = cniCommand("ADD", input)
@@ -255,6 +270,8 @@ var _ = Describe("CniWrapperPlugin", func() {
 		os.Remove(debugFileName)
 		os.Remove(datastorePath)
 		os.Remove(iptablesLockFilePath)
+
+		removeNetworkNamespace(containerNetns)
 
 		removeDummyInterface(underlayName1, underlayIpAddr1)
 		removeDummyInterface(underlayName2, underlayIpAddr2)
@@ -338,6 +355,24 @@ var _ = Describe("CniWrapperPlugin", func() {
 			Eventually(session).Should(gexec.Exit(0))
 			Expect(session.Out.Contents()).To(MatchJSON(`{ "cniVersion": "0.3.1", "ips": [{ "version": "4", "interface": -1, "address": "1.2.3.4/32" }], "dns":{} }`))
 			Expect(AllIPTablesRules("nat")).To(ContainElement("-A POSTROUTING -s 1.2.3.4/32 ! -o some-device -j MASQUERADE"))
+		})
+
+		FIt("writes redirect output chain rules to proxy traffic envoy in the container namespace", func() {
+			session, err := gexec.Start(cmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(session).Should(gexec.Exit(0))
+
+			By("checking that the envoy chain is created")
+			Expect(ContainerIPTablesRules(containerNetns, "nat")).To(ContainElement("-N " + envoyChainName))
+
+			By("checking that the output chain jumps to the envoy chain")
+			Expect(ContainerIPTablesRules(containerNetns, "nat")).To(ContainElement("-A OUTPUT -j " + envoyChainName))
+
+			By("checking that the envoy chain returns when the owner is not vcap")
+			Expect(ContainerIPTablesRules(containerNetns, "nat")).To(ContainElement(fmt.Sprintf("-A %s -m owner ! --uid-owner 1000 -j RETURN ", envoyChainName)))
+
+			By("checking that the envoy chain redirects to the proxy port")
+			Expect(ContainerIPTablesRules("", "nat")).To(ContainElement(fmt.Sprintf("-A %s -d %s -p tcp -j REDIRECT --to-ports %s", envoyChainName, inputStruct.OverlayNetwork, inputStruct.ProxyPort)))
 		})
 
 		It("writes default deny input chain rules to prevent connecting to things on the host", func() {
@@ -880,4 +915,16 @@ func removeDummyInterface(interfaceName, ipAddress string) {
 
 	err = netlink.LinkDel(link)
 	Expect(err).ToNot(HaveOccurred())
+}
+
+func createNetworkNamespace(netnsName string) {
+	session, err := gexec.Start(exec.Command("ip", "netns", "add", netnsName), GinkgoWriter, GinkgoWriter)
+	Expect(err).NotTo(HaveOccurred())
+	Eventually(session).Should(gexec.Exit(0))
+}
+
+func removeNetworkNamespace(netnsName string) {
+	session, err := gexec.Start(exec.Command("ip", "netns", "del", netnsName), GinkgoWriter, GinkgoWriter)
+	Expect(err).NotTo(HaveOccurred())
+	Eventually(session).Should(gexec.Exit(0))
 }

@@ -23,6 +23,8 @@ type WrapperConfig struct {
 	InstanceAddress               string                 `json:"instance_address"`
 	DNSServers                    []string               `json:"dns_servers"`
 	UnderlayIPs                   []string               `json:"underlay_ips"`
+	OverlayNetwork                string                 `json:"overlay_network"`
+	ProxyPort                     int                    `json:"proxy_port"`
 	IPTablesASGLogging            bool                   `json:"iptables_asg_logging"`
 	IPTablesC2CLogging            bool                   `json:"iptables_c2c_logging"`
 	IPTablesDeniedLogsPerSec      int                    `json:"iptables_denied_logs_per_sec" validate:"min=1"`

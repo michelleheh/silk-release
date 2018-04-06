@@ -13,7 +13,7 @@ module Bosh::Template::Test
         {}
       end
 
-      links = [
+      let(:links) { [
         Link.new(
           name: 'cf_network',
           instances: [LinkInstance.new()],
@@ -22,7 +22,7 @@ module Bosh::Template::Test
             'subnet_prefix_length' => 24
           }
         )
-      ]
+      ]}
 
       describe 'silk-daemon job' do let(:job) {release.job('silk-daemon')}
         describe 'config/client-config.json' do
